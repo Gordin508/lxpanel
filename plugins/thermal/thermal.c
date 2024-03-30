@@ -45,10 +45,13 @@
 #define SYSFS_THERMAL_TRIP  "trip_point_0_temp"
 
 #define MAX_NUM_SENSORS 10
-#define MAX_AUTOMATIC_CRITICAL_TEMP 1500 /* temperatures are internally stored as a tenth of a degree Celsius, so this is 150 degrees */
+#define TEMPERATURE_INTERNAL_FACTOR 10 /* temperature in degrees celcius is obtained by dividing internal value by TEMPERATURE_INTERNAL_FACTOR */
+#define TIF TEMPERATURE_INTERNAL_FACTOR /* alias */
+#define TIFF ((float)TIF)
+#define MAX_AUTOMATIC_CRITICAL_TEMP (150 * TIF)
 
-#define ABSOLUTE_MIN -2730 /* lowest possible temperature */
-#define ERROR_TEMP ABSOLUTE_MIN * 10 /* disambiguate between error value and actual negative temperatures */
+#define ABSOLUTE_MIN (-273 * TIF) /* lowest possible temperature */
+#define ERROR_TEMP (ABSOLUTE_MIN - 5) /* temperature-returning functions shall return ERROR_TEMP if an error was encountered */
 
 #if !GLIB_CHECK_VERSION(2, 40, 0)
 # define g_info(...) g_log(G_LOG_DOMAIN, G_LOG_LEVEL_INFO, __VA_ARGS__)
@@ -61,9 +64,9 @@ typedef struct thermal {
     config_setting_t *settings;
     GtkWidget *namew;
     GString *tip;
-    int warning1; /* warning temperature in tenths of degrees */
+    int warning1;
     int warning2;
-    int warning1_user; /* user will type in full degrees */
+    int warning1_user; /* user-supplied values are in degrees celcius */
     int warning2_user;
     int not_custom_levels, auto_sensor, show_decimal;
     char *sensor,
@@ -109,7 +112,7 @@ proc_get_critical(char const* sensor_path){
 
         pstr[strlen(pstr)-3] = '\0';
         fclose(state);
-        return atoi(pstr) * 10; /* this file contains only integer degrees */
+        return atoi(pstr) * TIF; /* this file contains only integer degrees */
     }
 
     fclose(state);
@@ -141,7 +144,7 @@ proc_get_temperature(char const* sensor_path){
 
         pstr[strlen(pstr)-3] = '\0';
         fclose(state);
-        return atoi(pstr) * 10; /* this file contains only integer degrees */
+        return atoi(pstr) * TIF; /* this file contains only integer degrees */
     }
 
     fclose(state);
@@ -162,13 +165,13 @@ static gint _get_reading(const char *path, gboolean quiet)
 
     while( fgets(buf, 256, state) &&
             ! ( pstr = buf ) );
+    fclose(state);
     if( pstr )
     {
-        fclose(state);
-        return atoi(pstr)/100; /* this file uses one thousandth of a degree as unit */
+        /* this file uses one thousandth of a degree as unit */
+        return TIF <= 1000 ? (atoi(pstr) / (1000 / TIF)) : (atoi(pstr) * (TIF / 1000)); 
     }
 
-    fclose(state);
     return ERROR_TEMP;
 }
 
@@ -244,14 +247,14 @@ static gint get_temperature(thermal *th, gint *warn)
         cur = th->get_temperature[i](th->sensor_array[i]);
         if (w == 2) ; /* already warning2 */
         else if (th->not_custom_levels &&
-                 th->critical[i] > 0 && cur >= th->critical[i] - 50)
+                 th->critical[i] > 0 && cur >= th->critical[i] - 5 * TIF)
             w = 2;
         else if ((!th->not_custom_levels || th->critical[i] < 0) &&
                  cur >= th->warning2)
             w = 2;
         else if (w == 1) ; /* already warning1 */
         else if (th->not_custom_levels &&
-                 th->critical[i] > 0 && cur >= th->critical[i] - 100)
+                 th->critical[i] > 0 && cur >= th->critical[i] - 10 * TIF)
             w = 1;
         else if ((!th->not_custom_levels || th->critical[i] < 0) &&
                  cur >= th->warning1)
@@ -289,8 +292,9 @@ update_display(thermal *th)
     gchar *separator;
 
     if (!th->not_custom_levels) {
-        th->warning1 = th->warning1_user * 10;
-        th->warning2 = th->warning2_user * 10;
+        /* user-supplied values are in degrees celcius */
+        th->warning1 = th->warning1_user * TIF;
+        th->warning2 = th->warning2_user * TIF;
     }
 
     temp = get_temperature(th, &i);
@@ -306,9 +310,9 @@ update_display(thermal *th)
     else
     {
         if (th->show_decimal)
-            snprintf(buffer, sizeof(buffer), "%.1f", (float)temp / 10.f);
+            snprintf(buffer, sizeof(buffer), "%.1f", (float)temp / TIFF);
         else
-            snprintf(buffer, sizeof(buffer), "%02d", temp / 10);
+            snprintf(buffer, sizeof(buffer), "%02d", temp / TIF));
 
         lxpanel_draw_label_text_with_color(th->panel, th->namew, buffer, TRUE, 1, &color);
     }
@@ -318,9 +322,9 @@ update_display(thermal *th)
     for (i = 0; i < th->numsensors; i++){
         gint sensor_temp = th->temperature[i];
         if (th->show_decimal)
-            g_string_append_printf(th->tip, "%s%s:\t%.1f°C", separator, th->sensor_name[i], (float)sensor_temp / 10.f);
+            g_string_append_printf(th->tip, "%s%s:\t%.1f°C", separator, th->sensor_name[i], (float)sensor_temp / TIFF);
         else
-            g_string_append_printf(th->tip, "%s%s:\t%2d°C", separator, th->sensor_name[i], sensor_temp / 10);
+            g_string_append_printf(th->tip, "%s%s:\t%2d°C", separator, th->sensor_name[i], sensor_temp / TIF);
         separator = "\n";
     }
     gtk_widget_set_tooltip_text(th->namew, th->tip->str);
@@ -502,11 +506,11 @@ static gboolean applyConfig(gpointer p)
     critical = get_critical(th);
 
     if(th->not_custom_levels){
-        th->warning1 = critical - 100;
-        th->warning2 = critical - 50;
+        th->warning1 = critical - 10 * TIF;
+        th->warning2 = critical - 5 * TIF;
     } else {
-        th->warning1 = th->warning1_user * 10;
-        th->warning2 = th->warning2_user * 10;
+        th->warning1 = th->warning1_user * TIF;
+        th->warning2 = th->warning2_user * TIF;
     }
 
     config_group_set_string(th->settings, "NormalColor", th->str_cl_normal);
@@ -581,8 +585,8 @@ thermal_constructor(LXPanel *panel, config_setting_t *settings)
         th->sensor = g_strdup(tmp);
     config_setting_lookup_int(settings, "Warning1Temp", &th->warning1_user);
     config_setting_lookup_int(settings, "Warning2Temp", &th->warning2_user);
-    th->warning1 = th->warning1_user * 10;
-    th->warning2 = th->warning2_user * 10;
+    th->warning1 = th->warning1_user * TIF;
+    th->warning2 = th->warning2_user * TIF;
 
     if(!th->str_cl_normal)
         th->str_cl_normal = g_strdup("#00ff00");
